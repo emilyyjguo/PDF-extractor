@@ -2,19 +2,24 @@
  * build_pilot.js  — Chapter 4 Pilot (pages 1-5)
  * Re-runnable: node build_pilot.js
  *
- * KEY FIX: docx v9 ImageRun transformation takes PIXELS (not EMU).
- * 1 px = 9525 EMU at 96 DPI (docx internal assumption).
- * US Letter content width = 6.5 in = 624 px (with 0.75" margins each side).
+ * HYBRID APPROACH:
+ * - Native OMML equations for standard math formulas
+ * - Unicode for simple inline symbols (→, ², ∞)
+ * - Image crops only for cover pages
  */
 
-const { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel, AlignmentType } = require('docx');
+const {
+  Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel, AlignmentType,
+  Math: OfficeMath, MathRun, MathFraction, MathSuperScript, MathSubScript,
+  MathLimitLower, MathRoundBrackets
+} = require('docx');
 const fs = require('fs');
 const path = require('path');
 
-const CROPS = '/home/claude/math_crops';
-const OUT   = '/mnt/user-data/outputs/chapter4_pilot.docx';
+const CROPS = path.join(__dirname, 'crops');
+const OUT   = path.join(__dirname, 'output', 'chapter4_pilot.docx');
 
-// Load PNG and read pixel dimensions from IHDR
+// ─── Image helpers (for cover pages only) ───────────────────────
 function loadImg(name) {
   const buf = fs.readFileSync(path.join(CROPS, name + '.png'));
   const w = buf.readUInt32BE(16);
@@ -22,13 +27,11 @@ function loadImg(name) {
   return { buf, w, h };
 }
 
-// Scale to fit maxWidthPx, preserve aspect ratio
 function fitPx(w, h, maxW) {
   const s = Math.min(1, maxW / w);
   return { width: Math.round(w * s), height: Math.round(h * s) };
 }
 
-// Centred image paragraph. maxWidthPx in PIXELS (96dpi equivalent)
 function imgPara(name, maxWidthPx, align) {
   align = align || AlignmentType.CENTER;
   const { buf, w, h } = loadImg(name);
@@ -40,6 +43,7 @@ function imgPara(name, maxWidthPx, align) {
   });
 }
 
+// ─── Text styling ───────────────────────────────────────────────
 const BODY_FONT = 'SimSun';
 const BODY_SIZE = 22;   // 11pt in half-points
 const BODY_SP   = { before: 0, after: 120, line: 276 };
@@ -96,6 +100,77 @@ function gap(pts) {
   return new Paragraph({ spacing: { before: 0, after: pts }, children: [] });
 }
 
+// ─── OMML Math Helpers ──────────────────────────────────────────
+
+// Create a limit expression: lim(x→a) of expression
+function mathLimit(variable, approach, expression) {
+  return new MathLimitLower({
+    children: [new MathRun("lim")],
+    limit: [new MathRun(variable + "→" + approach)]
+  });
+}
+
+// Create a fraction
+function mathFrac(num, denom) {
+  const numChildren = typeof num === 'string' ? [new MathRun(num)] : num;
+  const denomChildren = typeof denom === 'string' ? [new MathRun(denom)] : denom;
+  return new MathFraction({
+    numerator: numChildren,
+    denominator: denomChildren
+  });
+}
+
+// Create superscript (exponent)
+function mathSup(base, exp) {
+  const baseChildren = typeof base === 'string' ? [new MathRun(base)] : base;
+  const expChildren = typeof exp === 'string' ? [new MathRun(exp)] : exp;
+  return new MathSuperScript({
+    children: baseChildren,
+    superScript: expChildren
+  });
+}
+
+// Create subscript
+function mathSub(base, sub) {
+  const baseChildren = typeof base === 'string' ? [new MathRun(base)] : base;
+  const subChildren = typeof sub === 'string' ? [new MathRun(sub)] : sub;
+  return new MathSubScript({
+    children: baseChildren,
+    subScript: subChildren
+  });
+}
+
+// Paragraph containing centered math
+function mathPara(mathChildren, align) {
+  align = align || AlignmentType.CENTER;
+  return new Paragraph({
+    alignment: align,
+    spacing: { before: 100, after: 100 },
+    children: [
+      new OfficeMath({ children: mathChildren })
+    ]
+  });
+}
+
+// Paragraph with text + inline math
+function textWithMath(textParts) {
+  const children = [];
+  for (const part of textParts) {
+    if (typeof part === 'string') {
+      children.push(new TextRun({ text: part, font: BODY_FONT, size: BODY_SIZE }));
+    } else if (Array.isArray(part)) {
+      // It's math content
+      children.push(new OfficeMath({ children: part }));
+    }
+  }
+  return new Paragraph({
+    alignment: AlignmentType.JUSTIFIED,
+    spacing: BODY_SP,
+    indent: IND,
+    children
+  });
+}
+
 // ─── Build content ──────────────────────────────────────────────
 const children = [];
 
@@ -121,7 +196,7 @@ children.push(
   new Paragraph({ pageBreakBefore: true, children: [] })
 );
 
-// Page 3 — 4.1 L'Hopital
+// Page 3 — 4.1 L'Hopital Introduction
 children.push(hdr('84', '玩转微积分'), gap(60));
 children.push(
   body('前两章，我们弄清楚了微积分中最重要的极限概念，又升华了中学就学过的斜率概念，引入了导数。'),
@@ -134,7 +209,15 @@ children.push(
   body('如前所述，极限问题是微积分的核心问题，我们在处理极限问题的时候，经常碰到两种棘手的极限问题：'),
   gap(60)
 );
-children.push(imgPara('p3_indeterminate', 300));
+
+// Indeterminate forms: ∞/∞型 和 0/0型 (OMML)
+children.push(mathPara([
+  mathFrac("∞", "∞"),
+  new MathRun(" 型    和    "),
+  mathFrac("0", "0"),
+  new MathRun(" 型")
+]));
+
 children.push(gap(60));
 children.push(
   body('我们看到两个横躺着的"8"，感觉无从下手。'),
@@ -147,7 +230,35 @@ children.push(
   body('假设函数 f(x) 和 g(x)，在含有点 a 的某个区域内可导（不要求一定在 a 可导），而且 g(x) ≠ 0。如果：'),
   gap(60)
 );
-children.push(imgPara('p3_lhopital_formula', 500));
+
+// L'Hopital theorem formula (OMML) - Condition 1: both approach 0
+children.push(mathPara([
+  mathLimit("x", "a", null),
+  new MathRun(" f(x) = "),
+  mathLimit("x", "a", null),
+  new MathRun(" g(x) = 0")
+]));
+// Condition 2: both approach ∞
+children.push(mathPara([
+  new MathRun("或    "),
+  mathLimit("x", "a", null),
+  new MathRun(" f(x) = "),
+  mathLimit("x", "a", null),
+  new MathRun(" g(x) = ∞")
+]));
+children.push(gap(40));
+children.push(body('那么：'));
+// Conclusion: the limit of the ratio equals the limit of the derivatives ratio
+children.push(mathPara([
+  mathLimit("x", "a", null),
+  new MathRun(" "),
+  mathFrac("f(x)", "g(x)"),
+  new MathRun(" = "),
+  mathLimit("x", "a", null),
+  new MathRun(" "),
+  mathFrac("f'(x)", "g'(x)")
+]));
+
 children.push(gap(60));
 children.push(
   body('当然，前提是右边的极限存在。'),
@@ -164,41 +275,155 @@ children.push(
   body('眼下，我们可以把它当成公理，认为它不证自明，会用法则是硬道理。'),
   gap()
 );
-children.push(exLine('例 4-1）  ', '求 lim（ln x）/（x − 1）。（x → 1）'));
-children.push(body('解：根据罗必塔法则，我们有：'), gap(60));
-children.push(imgPara('p4_ex1_solution', 520));
+
+// Example 4-1
+children.push(exLine('例 4-1）  ', '求'));
+children.push(mathPara([
+  mathLimit("x", "1", null),
+  mathFrac("ln x", "x − 1")
+], AlignmentType.LEFT));
+children.push(body('解：根据罗必塔法则，我们有：'), gap(40));
+// Full derivation: lim ln(x)/(x-1) = lim (ln x)'/(x-1)' = lim (1/x)/1 = lim 1/x = 1
+children.push(mathPara([
+  mathLimit("x", "1", null),
+  mathFrac("ln x", "x − 1"),
+  new MathRun(" = "),
+  mathLimit("x", "1", null),
+  mathFrac("(ln x)'", "(x − 1)'"),
+  new MathRun(" = "),
+  mathLimit("x", "1", null),
+  mathFrac([mathFrac("1", "x")], "1"),
+  new MathRun(" = "),
+  mathLimit("x", "1", null),
+  mathFrac("1", "x"),
+  new MathRun(" = 1")
+]));
 children.push(gap());
 
-children.push(exLine('例 4-2）  ', '求 lim 2ˣ / 8x。（x → ∞）'));
-children.push(body('解：用罗必塔法则，得到：'), gap(60));
-children.push(imgPara('p4_ex2_solution', 520));
+// Example 4-2
+children.push(exLine('例 4-2）  ', '求'));
+children.push(mathPara([
+  mathLimit("x", "∞", null),
+  mathFrac([mathSup("2", "x")], "8x")
+], AlignmentType.LEFT));
+children.push(body('解：用罗必塔法则，得到：'), gap(40));
+// Full derivation: lim 2^x/(8x) = lim (2^x)'/(8x)' = lim (2^x·ln 2)/8 = ∞
+children.push(mathPara([
+  mathLimit("x", "∞", null),
+  mathFrac([mathSup("2", "x")], "8x"),
+  new MathRun(" = "),
+  mathLimit("x", "∞", null),
+  mathFrac([new MathRun("("), mathSup("2", "x"), new MathRun(")'")], "(8x)'"),
+  new MathRun(" = "),
+  mathLimit("x", "∞", null),
+  mathFrac([mathSup("2", "x"), new MathRun(" · ln 2")], "8"),
+  new MathRun(" = ∞")
+]));
 children.push(gap());
 
 children.push(body('好玩吧？再看两个极限。'), gap());
 
-children.push(exLine('例 4-3）  ', '求 lim 3ˣ / x³。（x → ∞）'));
-children.push(body('解：求这个极限，得对分子分母分别求3次导数，才能看清楚结果：'), gap(60));
-children.push(imgPara('p4_ex3_solution',  580));
-children.push(imgPara('p4_ex3_solution2', 580));
+// Example 4-3
+children.push(exLine('例 4-3）  ', '求'));
+children.push(mathPara([
+  mathLimit("x", "∞", null),
+  mathFrac([mathSup("3", "x")], [mathSup("x", "3")])
+], AlignmentType.LEFT));
+children.push(body('解：求这个极限，得对分子分母分别求3次导数，才能看清楚结果：'), gap(40));
+// Line 1: original = first derivative step
+children.push(mathPara([
+  mathLimit("x", "∞", null),
+  mathFrac([mathSup("3", "x")], [mathSup("x", "3")]),
+  new MathRun(" = "),
+  mathLimit("x", "∞", null),
+  mathFrac([new MathRun("("), mathSup("3", "x"), new MathRun(")'")], [new MathRun("("), mathSup("x", "3"), new MathRun(")'")]),
+  new MathRun(" = "),
+  mathLimit("x", "∞", null),
+  mathFrac([mathSup("3", "x"), new MathRun(" · ln 3")], [new MathRun("3"), mathSup("x", "2")])
+]));
+// Line 2: second derivative step
+children.push(mathPara([
+  new MathRun("= "),
+  mathLimit("x", "∞", null),
+  mathFrac([new MathRun("("), mathSup("3", "x"), new MathRun(" · ln 3)'")], [new MathRun("(3"), mathSup("x", "2"), new MathRun(")'")]),
+  new MathRun(" = "),
+  mathLimit("x", "∞", null),
+  mathFrac([mathSup("3", "x"), new MathRun(" · "), mathSup("(ln 3)", "2")], "6x")
+]));
+// Line 3: third derivative step = final result
+children.push(mathPara([
+  new MathRun("= "),
+  mathLimit("x", "∞", null),
+  mathFrac([new MathRun("("), mathSup("3", "x"), new MathRun(" · "), mathSup("(ln 3)", "2"), new MathRun(")'")], "(6x)'"),
+  new MathRun(" = "),
+  mathLimit("x", "∞", null),
+  mathFrac([mathSup("3", "x"), new MathRun(" · "), mathSup("(ln 3)", "3")], "6"),
+  new MathRun(" = ∞")
+]));
+
 children.push(gap(60));
 children.push(
   body('由本题的解题过程可知，即使分母不是 x³，而是 x¹⁰⁰ 或者更高次方，也不会改变极限的结果。同样，只要分子上 aˣ 中的 a > 1，结果不会变，都是 ∞。'),
-  body('这也就印证了我们前面说过的：aˣ 型的 ∞ 最厉害，跟 xⁿ 型的 ∞ 没有可比性。我们再看一下 xⁿ 型的 ∞ 遇上 log_b x 型的 ∞，会发生什么。'),
+  body('这也就印证了我们前面说过的：aˣ 型的 ∞ 最厉害，跟 xⁿ 型的 ∞ 没有可比性。我们再看一下 xⁿ 型的 ∞ 遇上 logᵦ x 型的 ∞，会发生什么。'),
   gap()
 );
-children.push(exLine('例 4-4）  ', ''), gap(60));
-children.push(imgPara('p4_ex4_full', 580));
+
+// Example 4-4
+children.push(exLine('例 4-4）  ', '求'));
+children.push(mathPara([
+  mathLimit("x", "∞", null),
+  mathFrac([mathSub("log", "b"), new MathRun(" x")], [mathSup("x", "n")]),
+  new MathRun("  (b > 1, n > 0)")
+], AlignmentType.LEFT));
+children.push(body('解：'), gap(40));
+// Full derivation with derivative notation
+children.push(mathPara([
+  mathLimit("x", "∞", null),
+  mathFrac([mathSub("log", "b"), new MathRun(" x")], [mathSup("x", "n")]),
+  new MathRun(" = "),
+  mathLimit("x", "∞", null),
+  mathFrac([new MathRun("("), mathSub("log", "b"), new MathRun(" x)'")], [new MathRun("("), mathSup("x", "n"), new MathRun(")'")]),
+  new MathRun(" = "),
+  mathLimit("x", "∞", null),
+  mathFrac([mathFrac("1", [new MathRun("x · ln b")])], [new MathRun("n"), mathSup("x", "n−1")])
+]));
+children.push(mathPara([
+  new MathRun("= "),
+  mathLimit("x", "∞", null),
+  mathFrac("1", [new MathRun("n · ln b · "), mathSup("x", "n")]),
+  new MathRun(" = 0")
+]));
 children.push(gap());
 
 // Page 5
 children.push(hdr('86', '玩转微积分'), gap(60));
 children.push(
-  body('这一次，xⁿ 型的 ∞ 与 log_b x 型的 ∞ 比较结果同样是 ∞！'),
+  body('这一次，xⁿ 型的 ∞ 与 logᵦ x 型的 ∞ 比较结果同样是 ∞！'),
   body('再重申一次，如果碰到 ∞/∞ 型的极限问题，分子分母只留下级别最高的 ∞"值班"即可，结果不会错。'),
   body('有了罗必塔法则，再来看第二章要求你记住的两个著名极限，将会非常直观：'),
   gap(60)
 );
-children.push(imgPara('p5_famous_limits', 320));
+
+// Famous limits (OMML)
+children.push(mathPara([
+  mathLimit("x", "0", null),
+  mathFrac("sin x", "x"),
+  new MathRun(" = "),
+  mathLimit("x", "0", null),
+  mathFrac("cos x", "1"),
+  new MathRun(" = 1")
+]));
+children.push(gap(20));
+children.push(mathPara([
+  mathLimit("n", "∞", null),
+  mathSup([
+    new MathRoundBrackets({
+      children: [new MathRun("1 + "), mathFrac("1", "n")]
+    })
+  ], "n"),
+  new MathRun(" = e")
+]));
+
 children.push(gap(60));
 children.push(
   body('我们登山时会发现，登得越高，视野越好。玩数学也一样，玩得越多，玩过的东西看得越清楚。'),
